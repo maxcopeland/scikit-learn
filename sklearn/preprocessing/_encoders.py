@@ -11,6 +11,7 @@ import numpy as np
 from scipy import sparse
 
 from .. import get_config as _get_config
+from .. import set_config as _set_config
 from ..base import BaseEstimator, TransformerMixin
 from ..externals import six
 from ..utils import check_array
@@ -751,9 +752,10 @@ class OrdinalEncoder(_BaseEncoder):
       between 0 and n_classes-1.
     """
 
-    def __init__(self, categories='auto', dtype=np.float64):
+    def __init__(self, categories='auto', dtype=np.float64, missing_cat="passthrough"):
         self.categories = categories
         self.dtype = dtype
+        self.missing_cat = missing_cat
 
     def fit(self, X, y=None):
         """Fit the OrdinalEncoder to X.
@@ -770,6 +772,8 @@ class OrdinalEncoder(_BaseEncoder):
         """
         # base classes uses _categories to deal with deprecations in
         # OneHoteEncoder: can be removed once deprecations are removed
+        _set_config(assume_finite=True) 
+
         self._categories = self.categories
         self._fit(X)
 
@@ -790,7 +794,17 @@ class OrdinalEncoder(_BaseEncoder):
 
         """
         X_int, _ = self._transform(X)
-        return X_int.astype(self.dtype, copy=False)
+
+        transformed = X_int.astype(self.dtype, copy=False)
+
+        
+        # set missing values based on missing_cat param
+        if self.missing_cat == 'passthrough':
+            transformed[transformed == -1] = np.nan
+        else:
+            transformed[transformed == -1] = self.missing_cat
+
+        return transformed
 
     def inverse_transform(self, X):
         """Convert the data back to the original representation.
@@ -809,6 +823,15 @@ class OrdinalEncoder(_BaseEncoder):
         check_is_fitted(self, 'categories_')
         X = check_array(X, accept_sparse='csr')
 
+        # create missing mask
+        if self.missing_cat == 'passthrough':
+            missing_mask = np.isnan(X)
+        else:
+            missing_mask = X == self.missing_cat
+
+        # set missing values to acceptable category
+        X[missing_mask] = 0
+
         n_samples, _ = X.shape
         n_features = len(self.categories_)
 
@@ -825,5 +848,8 @@ class OrdinalEncoder(_BaseEncoder):
         for i in range(n_features):
             labels = X[:, i].astype('int64')
             X_tr[:, i] = self.categories_[i][labels]
+
+        # recombine nan values
+        X_tr[missing_mask] = np.nan
 
         return X_tr

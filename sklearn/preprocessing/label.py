@@ -23,6 +23,7 @@ from ..utils.validation import check_is_fitted
 from ..utils.validation import _num_samples
 from ..utils.multiclass import unique_labels
 from ..utils.multiclass import type_of_target
+from ..utils.fixes import _object_dtype_isnan
 
 from ..externals import six
 
@@ -37,35 +38,49 @@ __all__ = [
 ]
 
 
-def _encode_numpy(values, uniques=None, encode=False):
+def _encode_numpy(values, uniques=None, encode=False, encode_missing=False):
     # only used in _encode below, see docstring there for details
+    missing_mask = np.isnan(values)
     if uniques is None:
         if encode:
-            uniques, encoded = np.unique(values, return_inverse=True)
+            uniques, encoded = np.unique(values[~missing_mask], return_inverse=True)
             return uniques, encoded
         else:
             # unique sorts
-            return np.unique(values)
+            return np.unique(values[~missing_mask])
     if encode:
         diff = _encode_check_unknown(values, uniques)
         if diff:
             raise ValueError("y contains previously unseen labels: %s"
                              % str(diff))
-        encoded = np.searchsorted(uniques, values)
+        encoded = np.searchsorted(uniques, values).astype(float)
+        uniques = uniques[~np.isnan(uniques)]
+        encoded[missing_mask] = -1 # Encode missing values as -1
         return uniques, encoded
     else:
         return uniques
 
 
-def _encode_python(values, uniques=None, encode=False):
+def _encode_python(values, uniques=None, encode=False, encode_missing=False):
     # only used in _encode below, see docstring there for details
+    missing_mask = _object_dtype_isnan(values)
+    
     if uniques is None:
-        uniques = sorted(set(values))
+        uniques = sorted(set(values[~missing_mask])) # to avoid sorting float in strs
         uniques = np.array(uniques, dtype=values.dtype)
+        
+    # values[missing_mask] = uniques[0] # set missing vals to acceptable cat
+
+    # if encode_missing:
+    #     if np.any(missing_mask): # add nan to unique values
+    #         np.append(uniques, np.nan)
+
     if encode:
         table = {val: i for i, val in enumerate(uniques)}
         try:
-            encoded = np.array([table[v] for v in values])
+            # if not encode_missing:
+            #     table[np.nan] = np.nan 
+            encoded = np.array([-1 if _object_dtype_isnan(v) else table[v] for v in values]) # encode missing values as -1
         except KeyError as e:
             raise ValueError("y contains previously unseen labels: %s"
                              % str(e))
@@ -105,9 +120,9 @@ def _encode(values, uniques=None, encode=False):
 
     """
     if values.dtype == object:
-        return _encode_python(values, uniques, encode)
+        return _encode_python(values, uniques, encode, encode_missing=True)
     else:
-        return _encode_numpy(values, uniques, encode)
+        return _encode_numpy(values, uniques, encode, encode_missing=True)
 
 
 def _encode_check_unknown(values, uniques, return_mask=False):
@@ -136,6 +151,10 @@ def _encode_check_unknown(values, uniques, return_mask=False):
         Additionally returned if ``return_mask=True``.
 
     """
+    missing_mask = _object_dtype_isnan(values) 
+    values = values.copy()
+    values[missing_mask] = uniques[0] # mask missing vals as acceptable cat
+    # values = values.copy()[~missing_mask]
     if values.dtype == object:
         uniques_set = set(uniques)
         diff = list(set(values) - uniques_set)
