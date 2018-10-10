@@ -60,7 +60,7 @@ class _BaseEncoder(BaseEstimator, TransformerMixin):
 
         return X
 
-    def _fit(self, X, handle_unknown='error'):
+    def _fit(self, X, handle_unknown='error', encode_missing=False):
         X = self._check_X(X)
 
         n_samples, n_features = X.shape
@@ -80,7 +80,7 @@ class _BaseEncoder(BaseEstimator, TransformerMixin):
         for i in range(n_features):
             Xi = X[:, i]
             if self._categories == 'auto':
-                cats = _encode(Xi)
+                cats = _encode(Xi, encode_missing=encode_missing)
             else:
                 cats = np.array(self._categories[i], dtype=X.dtype)
                 if self.handle_unknown == 'error':
@@ -91,7 +91,7 @@ class _BaseEncoder(BaseEstimator, TransformerMixin):
                         raise ValueError(msg)
             self.categories_.append(cats)
 
-    def _transform(self, X, handle_unknown='error'):
+    def _transform(self, X, handle_unknown='error', encode_missing=False):
         X = self._check_X(X)
 
         _, n_features = X.shape
@@ -115,7 +115,8 @@ class _BaseEncoder(BaseEstimator, TransformerMixin):
                     X_mask[:, i] = valid_mask
                     Xi = Xi.copy()
                     Xi[~valid_mask] = self.categories_[i][0]
-            _, encoded = _encode(Xi, self.categories_[i], encode=True)
+            _, encoded = _encode(Xi, self.categories_[i], encode=True,
+                                 encode_missing=encode_missing)
             X_int[:, i] = encoded
 
         return X_int, X_mask
@@ -716,6 +717,13 @@ class OrdinalEncoder(_BaseEncoder):
     dtype : number type, default np.float64
         Desired dtype of output.
 
+    handle_missing : string, default 'passthrough'
+        How to encode missing values
+
+        - 'passthrough' : Do not categorize missing values and return
+          transformed data with NaN's
+        - 'separate' : Categorize missing values sorted last
+
     Attributes
     ----------
     categories_ : list of arrays
@@ -733,7 +741,8 @@ class OrdinalEncoder(_BaseEncoder):
     >>> X = [['Male', 1], ['Female', 3], ['Female', 2]]
     >>> enc.fit(X)
     ... # doctest: +ELLIPSIS
-    OrdinalEncoder(categories='auto', dtype=<... 'numpy.float64'>)
+    OrdinalEncoder(categories='auto', dtype=<... 'numpy.float64'>,
+           handle_missing='passthrough')
     >>> enc.categories_
     [array(['Female', 'Male'], dtype=object), array([1, 2, 3], dtype=object)]
     >>> enc.transform([['Female', 3], ['Male', 1]])
@@ -752,10 +761,11 @@ class OrdinalEncoder(_BaseEncoder):
       between 0 and n_classes-1.
     """
 
-    def __init__(self, categories='auto', dtype=np.float64, missing_cat="passthrough"):
+    def __init__(self, categories='auto', dtype=np.float64,
+                 handle_missing="passthrough"):
         self.categories = categories
         self.dtype = dtype
-        self.missing_cat = missing_cat
+        self.handle_missing = handle_missing
 
     def fit(self, X, y=None):
         """Fit the OrdinalEncoder to X.
@@ -772,10 +782,15 @@ class OrdinalEncoder(_BaseEncoder):
         """
         # base classes uses _categories to deal with deprecations in
         # OneHoteEncoder: can be removed once deprecations are removed
-        _set_config(assume_finite=True) 
+        _set_config(assume_finite=True)
+
+        if self.handle_missing == 'separate':
+            self._encode_missing = True
+        else:
+            self._encode_missing = False
 
         self._categories = self.categories
-        self._fit(X)
+        self._fit(X, encode_missing=self._encode_missing)
 
         return self
 
@@ -793,16 +808,13 @@ class OrdinalEncoder(_BaseEncoder):
             Transformed input.
 
         """
-        X_int, _ = self._transform(X)
+
+        X_int, _ = self._transform(X, encode_missing=self._encode_missing)
 
         transformed = X_int.astype(self.dtype, copy=False)
 
-        
-        # set missing values based on missing_cat param
-        if self.missing_cat == 'passthrough':
+        if not self._encode_missing:
             transformed[transformed == -1] = np.nan
-        else:
-            transformed[transformed == -1] = self.missing_cat
 
         return transformed
 
@@ -824,13 +836,9 @@ class OrdinalEncoder(_BaseEncoder):
         X = check_array(X, accept_sparse='csr')
 
         # create missing mask
-        if self.missing_cat == 'passthrough':
+        if not self._encode_missing:
             missing_mask = np.isnan(X)
-        else:
-            missing_mask = X == self.missing_cat
-
-        # set missing values to acceptable category
-        X[missing_mask] = 0
+            X[missing_mask] = -1
 
         n_samples, _ = X.shape
         n_features = len(self.categories_)
@@ -849,7 +857,8 @@ class OrdinalEncoder(_BaseEncoder):
             labels = X[:, i].astype('int64')
             X_tr[:, i] = self.categories_[i][labels]
 
-        # recombine nan values
-        X_tr[missing_mask] = np.nan
+        # recombine missing values
+        if not self._encode_missing:
+            X_tr[missing_mask] = np.nan
 
         return X_tr
